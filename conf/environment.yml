@@ -1,0 +1,14 @@
+name: portfolio
+
+dependencies:
+  - python=3.9
+  - numpy
+  - matplotlib
+  - plotly
+  - pandas
+  - lightgbm=3.2.1
+  - pip:
+   - yfinance
+   - sktime
+   - pystan=2.19.1.1
+   - prophet
