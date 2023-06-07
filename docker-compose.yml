@@ -1,0 +1,18 @@
+version: "3.9"  # optional since v1.27.0
+services:
+  jupyter:
+    build: .
+    ports:
+      - "8030:8030"
+     # - "4040:4040"
+    volumes:
+      - ${PWD}:/home/
+    command: >
+      sh -c "micromamba install -c conda-forge jupyterlab --yes &&
+       micromamba install -c conda-forge ipywidgets --yes &&
+       micromamba install -c conda-forge jupyterlab_widgets --yes &&
+       jupyter lab --port 8030 --ip 0.0.0.0 --allow-root --NotebookApp.token='' --NotebookApp.password=''" --ServerApp.root_dir /home --LabApp.app_dir /
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: "docker"
+      PATH: "/opt/conda/bin/:${PATH}" 
