@@ -6,37 +6,21 @@ from notebooks.src.misc_utils import *
 from notebooks.src.model_utils import *
 from notebooks.src.sequence_utils import *
 from notebooks.src.portfolio import *
-from yahooquery import Ticker
+from notebooks.src.data import update
 from datetime import datetime,timedelta
-import os
 import logging
 
 DATA_DIR="notebooks/"
 MODELS_DIR="notebooks/"
 HORIZON=7
 PRICE_COLUMN="Close"
-
+DB_PATH="stock_db"
 HISTORY=14
 FORECAST_STEPS=1
 FUTURE=0
 TARGET=f"log_return_{HORIZON}"
+LOOKBACK=365
 
-def get_details(tickers,remove_ticker_list):
-    t = Ticker(tickers,asynchronous=True)
-    res_prof=t.summary_profile
-    res_detail=t.quotes
-    
-    dfs=[]
-    for x in tickers:
-        if x not in remove_ticker_list:
-            if isinstance(res_prof[x],dict) and isinstance(res_detail[x],dict):
-                try:
-                    tmp=pd.DataFrame.from_dict(res_prof[x]|res_detail[x],orient="index").transpose()
-                    tmp["ticker"]=x
-                    dfs.append(tmp)
-                except:
-                    continue
-    return pd.concat(dfs,ignore_index=True)
 
 if __name__=="__main__":
     logging_level = logging.INFO
@@ -45,43 +29,19 @@ if __name__=="__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
         level=logging_level,
     )
+    conn=create_connection(DB_PATH)
     today=datetime.today().strftime("%Y-%m-%d")
     yesterday=(datetime.today()-timedelta(days=1)).strftime("%Y-%m-%d")
+    initial_date=(datetime.today()-timedelta(days=LOOKBACK)).strftime("%Y-%m-%d")
     logging.info(f"Today: {today}")
     logging.info(f"Yesterday: {yesterday}")
-    if os.path.exists(f"{DATA_DIR}/data_{yesterday}.csv"):
-        logging.info(f"Loading Yesterday's data from {DATA_DIR}/data_{yesterday}.csv")
-        data=pd.read_csv(f"{DATA_DIR}/data_{yesterday}.csv")
-    else:
-        tickers=pd.read_csv(f"{DATA_DIR}/tickers.csv").ticker.values.tolist()
-        details=get_details(tickers,remove_ticker_list=["PPCB"])
-        details=details[["ticker",
-                        "industry",
-                        "sector",
-                        "country",
-                        "fullExchangeName",
-                        "quoteType",
-                        "fiftyTwoWeekLow",
-                        "fiftyTwoWeekHigh",
-                        "marketCap",
-                        "exchange",
-                        "epsTrailingTwelveMonths",
-                        "averageDailyVolume3Month",
-                        "epsForward",
-                        "forwardPE"]]
-        details=details[details.quoteType=="EQUITY"]
-        details=details[~details.country.isnull()]        
-        filtered_details=details[details.marketCap>details.marketCap.quantile(.95)]
-        t=Ticker(filtered_details.ticker,asynchronous=True)
-        data_init=t.history(start="2021-01-01",adj_ohlc=True,adj_timezone=False)
-        data=data_init.reset_index()
-        data=data.rename(columns={"symbol":"ticker","close":"Close"})
-        data=data.merge(filtered_details.dropna(),on="ticker",how="inner")
-        data.to_csv(f"{DATA_DIR}/data_{yesterday}.csv",index=False)
-    data=data[["date","ticker","industry","fullExchangeName","Close","marketCap","fiftyTwoWeekLow","fiftyTwoWeekHigh","averageDailyVolume3Month","epsTrailingTwelveMonths",
-                    "averageDailyVolume3Month",
-                    "epsForward",
-                    "forwardPE"]]
+    logging.info(f"Data Start Date: {initial_date}")
+    update(conn=conn) ### UPDATE Price Data
+    data=pd.read_sql(f"SELECT * FROM stock_price WHERE date>='{initial_date} 00:00:00'",con=conn)
+    data=data.groupby(["ticker","date"],as_index=False).mean()
+    profile=pd.read_sql(f"SELECT ticker,industry FROM profile",con=conn)
+    data=data.merge(profile,on="ticker",how="left")
+    data=data[["date","ticker","industry","Close"]]
     data["date"]=pd.to_datetime(data["date"])
     start_date=data.date.min()
     end_date=data.date.max()
@@ -94,14 +54,15 @@ if __name__=="__main__":
     if HORIZON>1:
         for i in range(1,HORIZON+1):
             data=shift(data,lag=i,column=PRICE_COLUMN)
-            return_cols.append(f"log_return_{i}_shift_-7")
+            return_cols.append(f"log_return_{i}_shift_-{i}")
             data[f"log_return_{i}"]=np.log(data[f"{PRICE_COLUMN}_shift_{i}"]/data[PRICE_COLUMN])
-            data=shift(data,lag=-HORIZON,column=f"log_return_{i}")
-    norm=Normaliser(target="Close",timeseries_id_column="ticker")
-    norm.fit(data[data.train==1])
+            data=shift(data,lag=-i,column=f"log_return_{i}")
+    norm=Normaliser()
+    norm.load(f"{MODELS_DIR}/normaliser")
     data=norm.normalise(data)
     num_features=["Close_scaled"]+return_cols
     initial_available_date=data[~data[TARGET].isnull()].date.min()
+    
     enc=Encoder()
     enc.load(f"{MODELS_DIR}/encoder")
     features=enc.get_encoded_features()
@@ -125,11 +86,12 @@ if __name__=="__main__":
                                                   restore_best_weights=True,
                                                 mode='min') 
     def same_sign(y_true,y_pred):
-        return tf.reduce_sum(tf.abs(tf.cast(tf.sign(y_true),dtype=tf.float64)+tf.cast(tf.sign(y_pred),dtype=tf.float64))/2)/tf.reduce_sum(tf.abs(tf.cast(tf.sign(y_true),dtype=tf.float64)))                          
-    if os.path.exists(f"{MODELS_DIR}/model-{yesterday}"):                
-        model = tf.keras.models.load_model(f"{MODELS_DIR}/model-{yesterday}", custom_objects={'same_sign':same_sign})
-    else:
-        raise ValueError(f"no model found under {MODELS_DIR}/model-{yesterday}")
+        return tf.reduce_sum(tf.abs(tf.cast(tf.sign(y_true),dtype=tf.float64)+tf.cast(tf.sign(y_pred),dtype=tf.float64))/2)/tf.reduce_sum(tf.abs(tf.cast(tf.sign(y_true),dtype=tf.float64)))    
+
+    
+    model_path=get_latest_model_path(models_dir=MODELS_DIR,prefix="model-")            
+    model = tf.keras.models.load_model(model_path, custom_objects={'same_sign':same_sign})
+
     history=model.fit(
         train_dict["X"],
         train_dict["Y"],
