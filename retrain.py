@@ -100,4 +100,4 @@ if __name__=="__main__":
         batch_size=30,
         verbose=1,
         callbacks=[early_stopping])
-    model.save(f"model-{today}")
+    model.save(f"{MODELS_DIR}/model-{today}")

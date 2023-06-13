@@ -5,7 +5,7 @@ import sqlite3
 from sqlite3 import Error
 
 from yahooquery import Ticker
-
+from notebooks.src.data import load_future_earnings,load_hist_earnings
 
 DB_NAME="stock_db"
 DATA_DIR="/home/notebooks/"
@@ -77,10 +77,10 @@ if __name__=="__main__":
     details=get_details(tickers)
     profiles=profiles.merge(details[["ticker","quoteType","exchange","exchangeName","marketState","marketCap"]],on="ticker",how="left")
     profiles["marketCap"]=profiles.marketCap.apply(lambda x:float(x) if not isinstance(x,dict) else np.nan)
-    profiles.to_sql(name="profile",con=conn,if_exists="append",index=False)
+    profiles.to_sql(name="profile",con=conn,if_exists="replace",index=False)
 
     modelled_tickers=profiles[(profiles.quoteType=="EQUITY")&(profiles.exchangeName=="NasdaqGS")]
-    modelled_tickers[(modelled_tickers.marketCap>modelled_tickers.marketCap.quantile(.8))][["ticker"]].to_sql(name="modelled_tickers",con=conn,if_exists="append",index=False)
+    modelled_tickers[(modelled_tickers.marketCap>modelled_tickers.marketCap.quantile(.8))][["ticker"]].to_sql(name="modelled_tickers",con=conn,if_exists="replace",index=False)
 
     ##download
     tickers=list(pd.read_sql("SELECT * FROM modelled_tickers",con=conn).ticker.values)
@@ -89,4 +89,8 @@ if __name__=="__main__":
     data=data_init.reset_index()
     data=data.rename(columns={"symbol":"ticker","close":"Close"})
     data["date"]=pd.to_datetime(data.date.dt.date)
-    data.to_sql("stock_price",con=conn,if_exists="append",index=False) ### create table with primary keys
+    data.to_sql("stock_price",con=conn,if_exists="replace",index=False) ### create table with primary keys
+    future_earnings=load_future_earnings(tickers=tickers)
+    hist_earnings=load_hist_earnings(tickers=tickers)
+    future_earnings.to_sql("future_earnings",con=conn,if_exists="replace",index=False)
+    hist_earnings.to_sql("hist_earnings",con=conn,if_exists="replace",index=False)
